@@ -6,6 +6,25 @@ dotenv.config();
 const Speaker = require("speaker");
 const record = require("node-record-lpcm16");
 
+// To specify the available functions, we must provide the LLM with a list of tools
+const sumTool = {
+    type: "function",
+    name: "calculate_sum",
+    description: "Use this function when asked to add numbers together, for example when asked 'What's 4 + 6'?.",
+    parameters: {
+        type: "object",
+        properties: {
+            "a": { "type": "number" },
+            "b": { "type": "number" }
+        },
+        required: ["a", "b"]
+    }
+}
+
+const functions = {
+    calculate_sum: (args) => args.a + args.b,
+};
+
 // Function to start recording audio
 function startRecording() {
     return new Promise((resolve, reject) => {
@@ -79,25 +98,46 @@ function main() {
           response: {
             modalities: ["text", "audio"],
             instructions: "Please assist the user.",
+            tools: [sumTool],
+            tool_choice: "auto",
           },
         };
         ws.send(JSON.stringify(createResponseEvent));
       }
-      
+
     function handleMessage(messageStr) {
         const message = JSON.parse(messageStr);
         // Define what happens when a message is received
         switch (message.type) {
-          case "response.audio.delta":
-            // We got a new audio chunk
-            const base64AudioChunk = message.delta;
-            const audioBuffer = Buffer.from(base64AudioChunk, "base64");
-            speaker.write(audioBuffer);
-            break;
-          case "response.audio.done":
-            speaker.end();
-            ws.close();
-            break;
+            case "response.audio.delta":
+                // We got a new audio chunk
+                const base64AudioChunk = message.delta;
+                const audioBuffer = Buffer.from(base64AudioChunk, "base64");
+                speaker.write(audioBuffer);
+                break;
+            case "response.audio.done":
+                speaker.end();
+                ws.close();
+                break;
+            case "response.function_call_arguments.done":
+                console.log(`Using function ${message.name} with arguments ${message.arguments}`);
+                // 1. Get the function information and call the function
+                const function_name = message.name;
+                const function_arguments = JSON.parse(message.arguments);
+                const result = functions[function_name](function_arguments);
+                // 2. Send the result of the function call
+                const functionOutputEvent = {
+                    type: "conversation.item.create",
+                    item: {
+                    type: "function_call_output",
+                    role: "system",
+                    output: result,
+                    }
+                };
+                ws.send(JSON.stringify(functionOutputEvent));
+                // 3. Request a response
+                ws.send(JSON.stringify({type: "response.create"}));
+                break;
         }
       }
     async function handleClose() {
